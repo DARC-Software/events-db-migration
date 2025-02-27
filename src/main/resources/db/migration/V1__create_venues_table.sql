@@ -1,0 +1,7 @@
+CREATE TABLE venue (
+    id BIGINT AUTO_INCREMENT,
+    name VARCHAR(100) NOT NULL,
+    address VARCHAR(100) NOT NULL,
+    phoneNumber VARCHAR(100) NOT NULL,
+    PRIMARY KEY(id)
+) ENGINE=InnoDB;
