@@ -1,0 +1,16 @@
+
+CREATE TABLE IF NOT EXISTS Event (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    start_time DATETIME NOT NULL,
+    end_time DATETIME NOT NULL,
+    type VARCHAR(100),
+    host VARCHAR(255),
+    room VARCHAR(100),
+    venue_id BIGINT NOT NULL,
+    CONSTRAINT fk_event_venue
+        FOREIGN KEY (venue_id)
+        REFERENCES Venue(id)
+        ON DELETE CASCADE
+        ON UPDATE CASCADE
+);
