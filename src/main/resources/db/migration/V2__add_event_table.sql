@@ -8,9 +8,5 @@ CREATE TABLE IF NOT EXISTS Event (
     host VARCHAR(255),
     room VARCHAR(100),
     venue_id BIGINT NOT NULL,
-    CONSTRAINT fk_event_venue
-        FOREIGN KEY (venue_id)
-        REFERENCES Venue(id)
-        ON DELETE CASCADE
-        ON UPDATE CASCADE
+    FOREIGN KEY (venue_id) REFERENCES Venue(id) ON DELETE CASCADE ON UPDATE CASCADE
 );
