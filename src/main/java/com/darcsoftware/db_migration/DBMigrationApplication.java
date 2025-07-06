@@ -1,4 +1,4 @@
-package com.wildlighttech.barsync_events_api;
+package com.darcsoftware.db_migration;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.SpringBootConfiguration;
