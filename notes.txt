@@ -1,0 +1,19 @@
+-- =========================
+-- RECOMMENDED VIEWS / QUERIES (optional; create later as views)
+-- - Upcoming events by venue:
+--   SELECT e.* FROM event e
+--   WHERE e.venue_id=? AND e.start_time >= UTC_TIMESTAMP()
+--   ORDER BY e.start_time LIMIT 50;
+--
+-- - Upcoming events by host (person or group):
+--   SELECT e.* FROM event e
+--   JOIN event_host eh ON eh.event_id = e.id
+--   WHERE eh.party_id=? AND e.start_time >= UTC_TIMESTAMP()
+--   ORDER BY e.start_time LIMIT 50;
+--
+-- - Events in a named group/series:
+--   SELECT e.* FROM event_group eg
+--   JOIN event_group_event ege ON ege.group_id = eg.id
+--   JOIN event e ON e.id = ege.event_id
+--   WHERE eg.slug=? OR eg.name=? ORDER BY ege.sort_order, e.start_time;
+-- =========================
