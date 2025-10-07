@@ -123,8 +123,8 @@ CREATE TABLE event (
   -- Local wall-clock times (what users see & enter)
   start_time_local DATETIME(3)     NOT NULL,
   end_time_local   DATETIME(3)     NOT NULL,
-  timezone         VARCHAR(64)     NOT NULL,  -- IANA TZ, e.g., 'America/New_York'
-  offset_minutes   SMALLINT        NOT NULL,  -- offset at start, e.g., -240
+  timezone         VARCHAR(64)     NOT NULL,       -- IANA TZ, e.g., 'America/New_York'
+  offset_minutes   SMALLINT        NOT NULL,       -- UTC offset at start (e.g., -240)
 
   -- Canonical UTC instants
   start_time_utc   TIMESTAMP(3)    NOT NULL,
@@ -135,19 +135,30 @@ CREATE TABLE event (
   updated_at       TIMESTAMP(3)    NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
 
   PRIMARY KEY (id),
+
+  -- helpful indexes
   KEY idx_event_parent (parent_event_id),
   KEY idx_event_room (room_id),
   KEY idx_event_start_utc (start_time_utc),
   KEY idx_event_venue_start_utc (venue_id, start_time_utc),
   KEY idx_event_start_local (start_time_local),
 
-  CONSTRAINT fk_event_parent FOREIGN KEY (parent_event_id) REFERENCES event(id) ON DELETE SET NULL,
-  CONSTRAINT fk_event_venue  FOREIGN KEY (venue_id)        REFERENCES venue(id) ON DELETE RESTRICT,
-  CONSTRAINT fk_event_room   FOREIGN KEY (room_id)         REFERENCES room(id)  ON DELETE SET NULL,
+  -- FKs
+  CONSTRAINT fk_event_parent FOREIGN KEY (parent_event_id)
+    REFERENCES event(id) ON DELETE SET NULL,
 
-  -- Enforce: selected room must belong to the event's venue
+  CONSTRAINT fk_event_venue FOREIGN KEY (venue_id)
+    REFERENCES venue(id) ON DELETE RESTRICT,
+
+  -- if a room is deleted, just null out room_id on events
+  CONSTRAINT fk_event_room FOREIGN KEY (room_id)
+    REFERENCES room(id) ON DELETE SET NULL,
+
+  -- ensure chosen room belongs to the same venue; do NOT set null here
   CONSTRAINT fk_event_room_matches_venue FOREIGN KEY (room_id, venue_id)
-    REFERENCES room(id, venue_id) ON DELETE SET NULL
+    REFERENCES room(id, venue_id)
+    ON UPDATE CASCADE
+    ON DELETE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE event_prize (
