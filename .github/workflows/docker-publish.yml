@@ -43,3 +43,45 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
           provenance: false
+  deploy-migration:
+    name: Deploy migration over SSH
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run helm upgrade on server
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.K3S_HOST }}          # e.g. your.ddns.name or IP
+          username: ${{ secrets.K3S_USER }}      # e.g. devin
+          key: ${{ secrets.K3S_SSH_KEY }}    # private key for the user above
+          port: ${{ secrets.SSH_PORT || 22 }}
+          script_stop: true
+          script: |
+            set -euo pipefail
+
+            # Optional: if your helm-values repo lives on the server, pull it
+            if [ -d "$HOME/helm-values/.git" ]; then
+              cd "$HOME/helm-values"
+              git pull --ff-only || true
+            else
+              echo "NOTE: Skipping git pull. Ensure releases/ and charts/ are present on server."
+              cd "$HOME/helm-values"
+            fi
+
+            # Safety: confirm cluster access
+            kubectl cluster-info
+
+            # (Re)deploy the migration job
+            # If the same Job name already ran, delete it (Jobs are immutable)
+            kubectl -n data delete job/events-db-migration --ignore-not-found
+
+            # Kick off the migration with the new image tag
+            # (Assumes your chart reads .Values.image.tag)
+            helm upgrade --install events-db-migration ./charts/events-db-migration \
+              -n data \
+              -f releases/data/events-db-migration/values.yaml \
+              --set image.tag=main
+
+            # Wait for completion & show logs
+            kubectl -n data wait --for=condition=complete --timeout=15m job/events-db-migration
+            kubectl -n data logs job/events-db-migration
