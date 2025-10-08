@@ -45,11 +45,11 @@ jobs:
           provenance: false
 
   deploy-migration:
-    name: Deploy migration over SSH
+    name: Deploy migration on k3s (via SSH)
     needs: build-and-push
     runs-on: ubuntu-latest
     steps:
-      - name: Deploy on server via SSH
+      - name: Run helm upgrade on server
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.K3S_HOST }}
@@ -60,68 +60,53 @@ jobs:
           script: |
             set -euo pipefail
 
-            # --- Ensure KUBECONFIG works for this user ---
+            # Use the user's kubeconfig (you already fixed its perms)
             export KUBECONFIG="$HOME/.kube/config"
-            echo "KUBECONFIG -> $KUBECONFIG"
-            ls -l "$KUBECONFIG"
-            kubectl cluster-info
-            kubectl get nodes -o wide
+            kubectl cluster-info >/dev/null
 
-            # --- Ensure helm-values repo is present & current ---
-            HV_DIR="$HOME/helm-values"
-            if [ ! -d "$HV_DIR/.git" ]; then
-              echo "Cloning helm-values repo..."
-              # If it’s private and you use a deploy key on the server, this 'git clone' will use ~/.ssh/config
-              git clone git@github.com:darc-software/helm-values.git "$HV_DIR"
-            else
-              echo "Updating helm-values repo..."
-              git -C "$HV_DIR" pull --ff-only || true
-            fi
+            # Paths to your on-server repo content
+            CHART_DIR="$HOME/helm-values/charts/events-db-migration"
+            VALUES_FILE="$HOME/helm-values/releases/data/events-db-migration/values.yaml"
 
-            # Paths to chart & values
-            CHART_DIR="$HV_DIR/charts/events-db-migration"
-            VALUES_FILE="$HV_DIR/releases/data/events-db-migration/values.yaml"
+            # Safety: ensure the chart & values exist
+            test -d "$CHART_DIR" || { echo "Chart not found: $CHART_DIR"; exit 1; }
+            test -f "$VALUES_FILE" || { echo "Values not found: $VALUES_FILE"; exit 1; }
 
-            # Sanity checks
-            echo "Chart dir: $CHART_DIR"
-            echo "Values:    $VALUES_FILE"
-            test -d "$CHART_DIR"
-            test -f "$VALUES_FILE"
-            ls -la "$CHART_DIR"
-
-            # OPTIONAL: lint/template to fail fast on templating issues
-            helm lint "$CHART_DIR" -f "$VALUES_FILE" || true
-            helm template events-db-migration "$CHART_DIR" -n data -f "$VALUES_FILE" > /dev/null
-
-            # Clean previous Job (Jobs are immutable)
+            # If the same Job ran before, remove it (Jobs are immutable)
             kubectl -n data delete job events-db-migration --ignore-not-found
 
-            # Deploy the Job; override image.tag so we pull the fresh image you just pushed
-            # Also disable hook so the Job stays in the cluster while we 'wait' on it.
+            # Deploy with the image tag you just pushed
+            # If your chart supports flipping hooks, keep runAsHook=false so the Job is a normal resource
             helm upgrade --install events-db-migration "$CHART_DIR" \
               -n data \
               -f "$VALUES_FILE" \
               --set image.tag=main \
               --set job.runAsHook=false
 
-            # Find the Job by label (release name) and wait for completion
+            # Resolve the Job name by Helm labels
             echo "Resolving Job name..."
             for i in $(seq 1 30); do
-              JOB_NAME="$(kubectl -n data get jobs -l app.kubernetes.io/instance=events-db-migration -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
-              if [ -n "${JOB_NAME:-}" ]; then
-                echo "Found Job: $JOB_NAME"
-                break
-              fi
+              JOB_NAME="$(kubectl -n data get jobs \
+                -l app.kubernetes.io/instance=events-db-migration \
+                -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+              [ -n "${JOB_NAME:-}" ] && break
               echo "Waiting for Job to appear ($i/30)..."
               sleep 2
             done
-            if [ -z "${JOB_NAME:-}" ]; then
-              echo "ERROR: No Job found with instance=events-db-migration"
-              kubectl -n data get jobs
+            [ -n "${JOB_NAME:-}" ] || { echo "ERROR: No Job found (instance=events-db-migration)"; kubectl -n data get jobs; exit 1; }
+
+            echo "Job detected: $JOB_NAME — waiting for completion..."
+            if ! kubectl -n data wait --for=condition=complete --timeout=15m "job/${JOB_NAME}"; then
+              echo "Job did not complete successfully. Dumping describe and logs:"
+              kubectl -n data describe "job/${JOB_NAME}" || true
+              # Print pod logs even if failed
+              PODS=$(kubectl -n data get pods -l job-name="${JOB_NAME}" -o name)
+              for p in $PODS; do
+                echo "---- LOGS for $p ----"
+                kubectl -n data logs "$p" --all-containers=true || true
+              done
               exit 1
             fi
 
-            # Wait & show logs
-            kubectl -n data wait --for=condition=complete --timeout=15m "job/${JOB_NAME}"
-            echo "==== Migration logs ===="
+            # Success path: print logs
             kubectl -n data logs "job/${JOB_NAME}"
