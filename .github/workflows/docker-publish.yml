@@ -43,6 +43,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
           provenance: false
+
   deploy-migration:
     name: Deploy migration over SSH
     needs: build-and-push
@@ -52,14 +53,25 @@ jobs:
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.K3S_HOST }}          # e.g. your.ddns.name or IP
-          username: ${{ secrets.K3S_USER }}      # e.g. devin
-          key: ${{ secrets.K3S_SSH_KEY }}    # private key for the user above
+          username: ${{ secrets.K3S_USER }}      # must be the non-root user with ~/.kube/config
+          key: ${{ secrets.K3S_SSH_KEY }}
           port: ${{ secrets.SSH_PORT || 22 }}
           script_stop: true
           script: |
             set -euo pipefail
 
-            # Optional: if your helm-values repo lives on the server, pull it
+            # Force kubeconfig to use user-local copy
+            export KUBECONFIG="$HOME/.kube/config"
+
+            echo "KUBECONFIG set to $KUBECONFIG"
+            ls -l "$KUBECONFIG" || { echo "No kubeconfig found"; exit 1; }
+
+            # Quick sanity check
+            kubectl version --client=true
+            kubectl cluster-info
+            kubectl get nodes
+
+            # Update helm-values repo if present
             if [ -d "$HOME/helm-values/.git" ]; then
               cd "$HOME/helm-values"
               git pull --ff-only || true
@@ -68,20 +80,15 @@ jobs:
               cd "$HOME/helm-values"
             fi
 
-            # Safety: confirm cluster access
-            kubectl cluster-info
-
-            # (Re)deploy the migration job
-            # If the same Job name already ran, delete it (Jobs are immutable)
+            # Clean up any old job (Jobs are immutable)
             kubectl -n data delete job/events-db-migration --ignore-not-found
 
-            # Kick off the migration with the new image tag
-            # (Assumes your chart reads .Values.image.tag)
+            # Kick off migration with new image tag
             helm upgrade --install events-db-migration ./charts/events-db-migration \
               -n data \
               -f releases/data/events-db-migration/values.yaml \
               --set image.tag=main
 
-            # Wait for completion & show logs
+            # Wait for job completion & show logs
             kubectl -n data wait --for=condition=complete --timeout=15m job/events-db-migration
             kubectl -n data logs job/events-db-migration
