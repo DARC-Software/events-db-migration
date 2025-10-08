@@ -52,43 +52,68 @@ jobs:
       - name: Run helm upgrade on server
         uses: appleboy/ssh-action@v1.2.0
         with:
-          host: ${{ secrets.K3S_HOST }}          # e.g. your.ddns.name or IP
-          username: ${{ secrets.K3S_USER }}      # must be the non-root user with ~/.kube/config
+          host: ${{ secrets.K3S_HOST }}
+          username: ${{ secrets.K3S_USER }}
           key: ${{ secrets.K3S_SSH_KEY }}
           port: ${{ secrets.SSH_PORT || 22 }}
           script_stop: true
+          envs: GITHUB_SHA
           script: |
             set -euo pipefail
-
-            # Force kubeconfig to use user-local copy
             export KUBECONFIG="$HOME/.kube/config"
 
-            echo "KUBECONFIG set to $KUBECONFIG"
-            ls -l "$KUBECONFIG" || { echo "No kubeconfig found"; exit 1; }
+            echo "KUBECONFIG -> $KUBECONFIG"
+            ls -l "$KUBECONFIG"
 
-            # Quick sanity check
             kubectl version --client=true
             kubectl cluster-info
             kubectl get nodes
 
-            # Update helm-values repo if present
+            # If your helm-values repo is on the server, update it
             if [ -d "$HOME/helm-values/.git" ]; then
               cd "$HOME/helm-values"
               git pull --ff-only || true
             else
-              echo "NOTE: Skipping git pull. Ensure releases/ and charts/ are present on server."
               cd "$HOME/helm-values"
             fi
 
-            # Clean up any old job (Jobs are immutable)
-            kubectl -n data delete job/events-db-migration --ignore-not-found
+            # Clean any previous Job (name may differ), then upgrade/install
+            kubectl -n data delete job -l app.kubernetes.io/instance=events-db-migration --ignore-not-found
 
-            # Kick off migration with new image tag
             helm upgrade --install events-db-migration ./charts/events-db-migration \
               -n data \
               -f releases/data/events-db-migration/values.yaml \
-              --set image.tag=main
+              --set image.tag=${GITHUB_SHA}
 
-            # Wait for job completion & show logs
-            kubectl -n data wait --for=condition=complete --timeout=15m job/events-db-migration
-            kubectl -n data logs job/events-db-migration
+            # Find the actual Job name created by Helm
+            echo "Resolving Job name..."
+            for i in {1..30}; do
+              JOB_NAME=$(kubectl -n data get jobs \
+                -l app.kubernetes.io/instance=events-db-migration \
+                -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+              if [ -n "${JOB_NAME:-}" ]; then
+                echo "Found Job: $JOB_NAME"
+                break
+              fi
+              echo "Waiting for Job to appear ($i/30)..."
+              sleep 2
+            done
+            if [ -z "${JOB_NAME:-}" ]; then
+              echo "ERROR: No Job found with instance=events-db-migration"
+              kubectl -n data get jobs -o wide || true
+              exit 1
+            fi
+
+            # Wait for completion and show logs from the Job's Pod(s)
+            if ! kubectl -n data wait --for=condition=complete --timeout=15m job/${JOB_NAME}; then
+              echo "Job did not complete successfully. Describing:"
+              kubectl -n data describe job/${JOB_NAME} || true
+              echo "Pods:"
+              kubectl -n data get pods -l job-name=${JOB_NAME} -o wide || true
+              echo "Logs:"
+              kubectl -n data logs -l job-name=${JOB_NAME} --all-containers --tail=-1 || true
+              exit 1
+            fi
+
+            # Success logs
+            kubectl -n data logs -l job-name=${JOB_NAME} --all-containers --tail=-1
