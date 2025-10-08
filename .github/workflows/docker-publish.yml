@@ -61,59 +61,19 @@ jobs:
           script: |
             set -euo pipefail
             export KUBECONFIG="$HOME/.kube/config"
-
-            echo "KUBECONFIG -> $KUBECONFIG"
-            ls -l "$KUBECONFIG"
-
-            kubectl version --client=true
-            kubectl cluster-info
-            kubectl get nodes
-
-            # If your helm-values repo is on the server, update it
-            if [ -d "$HOME/helm-values/.git" ]; then
-              cd "$HOME/helm-values"
-              git pull --ff-only || true
-            else
-              cd "$HOME/helm-values"
-            fi
-
-            # Clean any previous Job (name may differ), then upgrade/install
-            kubectl -n data delete job -l app.kubernetes.io/instance=events-db-migration --ignore-not-found
-
+            
+            kubectl cluster-info >/dev/null
+            
+            # Redeploy Job with the *fresh* image from this commit
+            kubectl -n data delete job/events-db-migration --ignore-not-found
+            
             helm upgrade --install events-db-migration ./charts/events-db-migration \
               -n data \
               -f releases/data/events-db-migration/values.yaml \
               --set image.tag=${GITHUB_SHA}
-
-            # Find the actual Job name created by Helm
-            echo "Resolving Job name..."
-            for i in {1..30}; do
-              JOB_NAME=$(kubectl -n data get jobs \
-                -l app.kubernetes.io/instance=events-db-migration \
-                -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
-              if [ -n "${JOB_NAME:-}" ]; then
-                echo "Found Job: $JOB_NAME"
-                break
-              fi
-              echo "Waiting for Job to appear ($i/30)..."
-              sleep 2
-            done
-            if [ -z "${JOB_NAME:-}" ]; then
-              echo "ERROR: No Job found with instance=events-db-migration"
-              kubectl -n data get jobs -o wide || true
-              exit 1
-            fi
-
-            # Wait for completion and show logs from the Job's Pod(s)
-            if ! kubectl -n data wait --for=condition=complete --timeout=15m job/${JOB_NAME}; then
-              echo "Job did not complete successfully. Describing:"
-              kubectl -n data describe job/${JOB_NAME} || true
-              echo "Pods:"
-              kubectl -n data get pods -l job-name=${JOB_NAME} -o wide || true
-              echo "Logs:"
-              kubectl -n data logs -l job-name=${JOB_NAME} --all-containers --tail=-1 || true
-              exit 1
-            fi
-
-            # Success logs
-            kubectl -n data logs -l job-name=${JOB_NAME} --all-containers --tail=-1
+            
+            # Wait for the known job name = release name
+            kubectl -n data wait --for=condition=complete --timeout=15m job/events-db-migration
+            
+            # Show logs from the Job pods
+            kubectl -n data logs -l job-name=events-db-migration --all-containers --tail=-1
